@@ -1,10 +1,9 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "framework": "vite",
-  "installCommand": "npm install",
+  "framework": null,
+  "installCommand": "npm install --no-audit --no-fund",
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
-  "cleanUrls": true,
   "headers": [
     {
       "source": "/version.json",
@@ -36,7 +35,7 @@
   ],
   "rewrites": [
     {
-      "source": "/((?!assets/|version\\.json|favicon\\.ico).*)",
+      "source": "/(.*)",
       "destination": "/index.html"
     }
   ]
