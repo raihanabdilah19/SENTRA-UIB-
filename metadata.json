@@ -1,0 +1,6 @@
+{
+  "name": "Organization Hub - Administrasi Organisasi Mahasiswa",
+  "description": "Sistem Administrasi dan Dashboard Organisasi Mahasiswa dengan manajemen surat, keuangan, agenda, arsip, analitik real-time, dan keamanan terenkripsi.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
