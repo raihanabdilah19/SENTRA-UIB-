@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, User, Check, Shield, Key, UserPlus, AlertCircle } from 'lucide-react';
+import { X, User, Check, Shield, Key, UserPlus, AlertCircle, Loader2 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 
 export const UserProfileModal: React.FC = () => {
@@ -14,6 +14,7 @@ export const UserProfileModal: React.FC = () => {
   const [tab, setTab] = useState<'edit' | 'create'>('edit');
   const [name, setName] = useState('');
   const [password, setPassword] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
@@ -31,29 +32,39 @@ export const UserProfileModal: React.FC = () => {
 
   if (activeModal !== 'profile') return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting) return;
     setErrorMsg(null);
+    setIsSubmitting(true);
 
-    if (tab === 'edit') {
-      if (!name.trim() || !password.trim()) {
-        setErrorMsg('Nama lengkap dan password wajib diisi.');
-        return;
+    try {
+      if (tab === 'edit') {
+        if (!name.trim() || !password.trim()) {
+          setErrorMsg('Nama lengkap dan password wajib diisi.');
+          return;
+        }
+        const res = await updateCurrentUserProfile({
+          name: name.trim(),
+          password: password.trim(),
+          role: 'superadmin',
+          nim: '',
+          division: 'SENTRA UIB',
+          phone: '',
+        });
+        if (!res.ok) {
+          setErrorMsg(res.error || 'Gagal memperbarui akun.');
+          return;
+        }
+        setActiveModal(null);
+      } else {
+        const res = await registerAndLoginAccount(name, password);
+        if (!res.ok) {
+          setErrorMsg(res.error || 'Gagal membuat akun baru.');
+        }
       }
-      updateCurrentUserProfile({
-        name: name.trim(),
-        password: password.trim(),
-        role: 'superadmin',
-        nim: '',
-        division: 'SENTRA UIB',
-        phone: '',
-      });
-      setActiveModal(null);
-    } else {
-      const res = registerAndLoginAccount(name, password);
-      if (!res.ok) {
-        setErrorMsg(res.error || 'Gagal membuat akun baru.');
-      }
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -77,6 +88,7 @@ export const UserProfileModal: React.FC = () => {
           </div>
           <button
             onClick={() => setActiveModal(null)}
+            disabled={isSubmitting}
             className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-white/10"
           >
             <X className="w-5 h-5" />
@@ -87,6 +99,7 @@ export const UserProfileModal: React.FC = () => {
           <div className="grid grid-cols-2 gap-1.5 p-1 rounded-xl bg-slate-100 dark:bg-slate-800">
             <button
               type="button"
+              disabled={isSubmitting}
               onClick={() => setTab('edit')}
               className={`py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
                 tab === 'edit'
@@ -98,6 +111,7 @@ export const UserProfileModal: React.FC = () => {
             </button>
             <button
               type="button"
+              disabled={isSubmitting}
               onClick={() => setTab('create')}
               className={`py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
                 tab === 'create'
@@ -126,10 +140,11 @@ export const UserProfileModal: React.FC = () => {
             <input
               type="text"
               required
+              disabled={isSubmitting}
               placeholder=""
               value={name}
               onChange={(e) => setName(e.target.value)}
-              className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-hidden focus:ring-2 focus:ring-blue-500 font-medium"
+              className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-hidden focus:ring-2 focus:ring-blue-500 font-medium disabled:opacity-60"
             />
           </div>
 
@@ -142,10 +157,11 @@ export const UserProfileModal: React.FC = () => {
               <input
                 type="password"
                 required
+                disabled={isSubmitting}
                 placeholder=""
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="w-full pl-9 pr-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-hidden focus:ring-2 focus:ring-blue-500 font-medium"
+                className="w-full pl-9 pr-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-hidden focus:ring-2 focus:ring-blue-500 font-medium disabled:opacity-60"
               />
             </div>
           </div>
@@ -154,12 +170,12 @@ export const UserProfileModal: React.FC = () => {
             <Shield className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
             <div className="space-y-0.5">
               <p className="font-bold">
-                {tab === 'edit' ? 'Data Tersimpan Sesuai Akun' : 'Ruang Kerja Baru & Terpisah'}
+                {tab === 'edit' ? 'Tersinkron ke Cloud' : 'Ruang Kerja Baru & Terpisah'}
               </p>
               <p className="text-blue-700 dark:text-blue-300">
                 {tab === 'edit'
-                  ? 'Seluruh data surat, arsip, keuangan, dan agenda Anda tetap tersimpan utuh pada akun ini.'
-                  : 'Akun baru akan masuk dengan isi terbaru yang bersih dan setiap input disimpan khusus untuk akun baru tersebut.'}
+                  ? 'Perubahan akun dan seluruh data Anda otomatis tersimpan ke cloud agar bisa dibuka dari HP maupun laptop.'
+                  : 'Akun baru akan masuk dengan isi terbaru yang bersih dan tersimpan otomatis di cloud.'}
               </p>
             </div>
           </div>
@@ -168,17 +184,23 @@ export const UserProfileModal: React.FC = () => {
           <div className="pt-2 flex items-center justify-end gap-2.5">
             <button
               type="button"
+              disabled={isSubmitting}
               onClick={() => setActiveModal(null)}
-              className="px-4 py-2 rounded-xl text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 font-medium cursor-pointer"
+              className="px-4 py-2 rounded-xl text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 font-medium cursor-pointer disabled:opacity-60"
             >
               Batal
             </button>
             <button
               type="submit"
-              className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold flex items-center gap-2 shadow-md shadow-blue-600/30 transition-all cursor-pointer"
+              disabled={isSubmitting}
+              className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:bg-blue-500/80 text-white font-semibold flex items-center gap-2 shadow-md shadow-blue-600/30 transition-all cursor-pointer disabled:cursor-wait"
             >
-              <Check className="w-4 h-4" />
-              {tab === 'edit' ? 'Simpan Perubahan' : 'Buat Akun & Masuk'}
+              {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+              {isSubmitting
+                ? 'Menyimpan...'
+                : tab === 'edit'
+                ? 'Simpan Perubahan'
+                : 'Buat Akun & Masuk'}
             </button>
           </div>
         </form>

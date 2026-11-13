@@ -1,0 +1,125 @@
+{
+  "entities": {
+    "AccountWorkspace": {
+      "title": "AccountWorkspace",
+      "description": "Cloud-synced SENTRA UIB workspace account document keyed by deterministic SHA-256 accountKey, storing hashed login verifier and full per-account organization state.",
+      "type": "object",
+      "properties": {
+        "accountKey": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]+$",
+          "description": "Deterministic SHA-256 hex key derived from normalized full name."
+        },
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Unique user identifier for the account."
+        },
+        "normalizedName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "description": "Trimmed, collapsed-whitespace lowercase account full name."
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "description": "Formatted display name of the account owner."
+        },
+        "passwordHash": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]+$",
+          "description": "SHA-256 login verification digest."
+        },
+        "statePayload": {
+          "type": "object",
+          "description": "Native Firestore map containing all per-account SENTRA UIB organization records (without plaintext password)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when account was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of latest cloud sync."
+        }
+      },
+      "required": [
+        "accountKey",
+        "userId",
+        "normalizedName",
+        "displayName",
+        "passwordHash",
+        "statePayload",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AccountSecret": {
+      "title": "AccountSecret",
+      "description": "Write-only authorization verifier paired atomically with AccountWorkspace so updates require proving knowledge of the account password.",
+      "type": "object",
+      "properties": {
+        "accountKey": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]+$",
+          "description": "Matching SHA-256 accountKey."
+        },
+        "authVerifier": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]+$",
+          "description": "SHA-256 write authorization verifier (never readable via client SDK)."
+        },
+        "previousAuthVerifier": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]+$",
+          "description": "Previous authVerifier supplied during updates to authorize mutations."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when secret record was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of latest authorized write."
+        }
+      },
+      "required": [
+        "accountKey",
+        "authVerifier",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/accounts/{accountKey}": {
+      "schema": {
+        "$ref": "#/entities/AccountWorkspace"
+      },
+      "description": "Stores each SENTRA UIB account workspace synced across all user devices."
+    },
+    "/accountSecrets/{accountKey}": {
+      "schema": {
+        "$ref": "#/entities/AccountSecret"
+      },
+      "description": "Non-readable write-proof verifier documents enforcing authorized updates to accounts."
+    }
+  }
+}

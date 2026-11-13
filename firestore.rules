@@ -1,0 +1,184 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() == 64 && id.matches('^[a-f0-9]+$');
+    }
+
+    function isValidSha256(val) {
+      return val is string && val.size() == 64 && val.matches('^[a-f0-9]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidStatePayload(payload) {
+      return payload is map
+        && payload.keys().hasAll([
+          'currentUser',
+          'suratMasuk',
+          'suratKeluar',
+          'bukuAgenda',
+          'dokumen',
+          'proposalLpj',
+          'transaksi',
+          'agenda',
+          'kejadianPenting',
+          'aktivitas',
+          'notifications',
+          'backupInfo',
+          'integrations',
+          'theme',
+          'vaultEncrypted',
+          'encryptionKeyHint'
+        ])
+        && payload.keys().hasOnly([
+          'users',
+          'currentUser',
+          'suratMasuk',
+          'suratKeluar',
+          'bukuAgenda',
+          'dokumen',
+          'proposalLpj',
+          'transaksi',
+          'agenda',
+          'kejadianPenting',
+          'aktivitas',
+          'notifications',
+          'backupInfo',
+          'integrations',
+          'theme',
+          'vaultEncrypted',
+          'encryptionKeyHint'
+        ])
+        && payload.currentUser is map
+        && payload.currentUser.id is string
+        && payload.currentUser.id.size() >= 1
+        && payload.currentUser.id.size() <= 128
+        && payload.currentUser.name is string
+        && payload.currentUser.name.size() >= 1
+        && payload.currentUser.name.size() <= 160
+        && (!('password' in payload.currentUser) || payload.currentUser.password == '')
+        && (!('users' in payload) || (payload.users is list && payload.users.size() == 0))
+        && payload.suratMasuk is list && payload.suratMasuk.size() <= 500
+        && payload.suratKeluar is list && payload.suratKeluar.size() <= 500
+        && payload.bukuAgenda is list && payload.bukuAgenda.size() <= 1000
+        && payload.dokumen is list && payload.dokumen.size() <= 500
+        && payload.proposalLpj is list && payload.proposalLpj.size() <= 500
+        && payload.transaksi is list && payload.transaksi.size() <= 1000
+        && payload.agenda is list && payload.agenda.size() <= 500
+        && payload.kejadianPenting is list && payload.kejadianPenting.size() <= 500
+        && payload.aktivitas is list && payload.aktivitas.size() <= 200
+        && payload.notifications is list && payload.notifications.size() <= 200
+        && payload.backupInfo is map
+        && payload.integrations is map
+        && payload.theme is map
+        && payload.vaultEncrypted is bool
+        && payload.encryptionKeyHint is string
+        && payload.encryptionKeyHint.size() <= 120;
+    }
+
+    function isValidAccountDoc(data) {
+      return data.keys().hasAll([
+          'accountKey',
+          'userId',
+          'normalizedName',
+          'displayName',
+          'passwordHash',
+          'statePayload',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'accountKey',
+          'userId',
+          'normalizedName',
+          'displayName',
+          'passwordHash',
+          'statePayload',
+          'createdAt',
+          'updatedAt'
+        ])
+        && isValidId(data.accountKey)
+        && data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128
+        && data.normalizedName is string && data.normalizedName.size() >= 1 && data.normalizedName.size() <= 160
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 160
+        && isValidSha256(data.passwordHash)
+        && isValidStatePayload(data.statePayload)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAccountSecret(data) {
+      return data.keys().hasAll(['accountKey', 'authVerifier', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['accountKey', 'authVerifier', 'previousAuthVerifier', 'createdAt', 'updatedAt'])
+        && isValidId(data.accountKey)
+        && isValidSha256(data.authVerifier)
+        && (!('previousAuthVerifier' in data) || isValidSha256(data.previousAuthVerifier))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    match /accountSecrets/{accountKey} {
+      allow get, list, delete: if false;
+
+      allow create: if isValidId(accountKey)
+        && isValidAccountSecret(incoming())
+        && incoming().accountKey == accountKey
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && existsAfter(/databases/$(database)/documents/accounts/$(accountKey));
+
+      allow update: if isValidId(accountKey)
+        && isValidAccountSecret(incoming())
+        && incoming().accountKey == existing().accountKey
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && ('previousAuthVerifier' in incoming())
+        && incoming().previousAuthVerifier == existing().authVerifier
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'authVerifier',
+          'previousAuthVerifier',
+          'updatedAt'
+        ]);
+    }
+
+    match /accounts/{accountKey} {
+      allow list, delete: if false;
+
+      allow get: if isValidId(accountKey);
+
+      allow create: if isValidId(accountKey)
+        && isValidAccountDoc(incoming())
+        && incoming().accountKey == accountKey
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && existsAfter(/databases/$(database)/documents/accountSecrets/$(accountKey));
+
+      allow update: if isValidId(accountKey)
+        && isValidAccountDoc(incoming())
+        && incoming().accountKey == existing().accountKey
+        && incoming().userId == existing().userId
+        && incoming().normalizedName == existing().normalizedName
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && getAfter(/databases/$(database)/documents/accountSecrets/$(accountKey)).data.updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'displayName',
+          'passwordHash',
+          'statePayload',
+          'updatedAt'
+        ]);
+    }
+  }
+}

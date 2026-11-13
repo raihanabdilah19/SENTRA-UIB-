@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, ReactNode, useCallback } from 'react';
 import {
   AppStateData,
   loadAppData,
@@ -9,12 +9,25 @@ import {
   getRegisteredAccounts,
   saveRegisteredAccounts,
   setActiveSessionUserId,
-  createFreshAccountData,
   loadAccountAppData,
   saveAccountAppData,
   normalizeAccountName,
   formatRupiah,
 } from '../services/storage';
+import {
+  CloudSessionMeta,
+  computeAccountKey,
+  computeAuthVerifier,
+  computePasswordHash,
+  loadCloudSessionMeta,
+  loginAccountFromCloud,
+  registerAccountInCloud,
+  saveAccountStateToCloud,
+  saveCloudSessionMeta,
+  subscribeToAccountCloud,
+  syncLegacyLocalAccountsToCloud,
+  updateAccountCredentialsInCloud,
+} from '../services/cloudAccounts';
 import {
   User,
   BukuAgendaSuratRow,
@@ -88,10 +101,10 @@ interface AppContextType {
   // Auth & User actions
   isAuthenticated: boolean;
   loginUser: (user: User) => void;
-  loginWithCredentials: (name: string, password: string) => { ok: boolean; error?: string };
-  registerAndLoginAccount: (name: string, password: string) => { ok: boolean; error?: string };
+  loginWithCredentials: (name: string, password: string) => Promise<{ ok: boolean; error?: string }>;
+  registerAndLoginAccount: (name: string, password: string) => Promise<{ ok: boolean; error?: string }>;
   logoutUser: () => void;
-  updateCurrentUserProfile: (updated: Partial<User>) => void;
+  updateCurrentUserProfile: (updated: Partial<User>) => Promise<{ ok: boolean; error?: string }>;
   switchUser: (userId: string) => void;
 
   // CRUD for collections
@@ -166,6 +179,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [activeModal, setActiveModal] = useState<ActiveModal>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
+  const [cloudSession, setCloudSession] = useState<CloudSessionMeta | null>(() =>
+    loadCloudSessionMeta()
+  );
+
+  const isApplyingRemoteRef = useRef(false);
+  const cloudSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const latestStateRef = useRef<AppStateData>(state);
+  latestStateRef.current = state;
 
   const isAuthenticated = Boolean(
     state.currentUser &&
@@ -176,12 +197,101 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       state.currentUser.name !== 'Tamu / Pengunjung'
   );
 
-  // Auto-save on any change to state for active account
+  // Sync any pre-existing laptop local accounts to Firestore on boot and restore cloudSession if missing
   useEffect(() => {
-    if (isAuthenticated) {
-      saveAppData(state);
+    let cancelled = false;
+    const bootstrapCloudAccounts = async () => {
+      try {
+        const localAccounts = getRegisteredAccounts();
+        if (localAccounts.length > 0) {
+          await syncLegacyLocalAccountsToCloud(localAccounts);
+        }
+        if (cancelled) return;
+        if (isAuthenticated && !cloudSession && state.currentUser.name && state.currentUser.password) {
+          const [accountKey, passwordHash, authVerifier] = await Promise.all([
+            computeAccountKey(state.currentUser.name),
+            computePasswordHash(state.currentUser.name, state.currentUser.password),
+            computeAuthVerifier(state.currentUser.name, state.currentUser.password),
+          ]);
+          if (cancelled) return;
+          const meta: CloudSessionMeta = {
+            accountKey,
+            userId: state.currentUser.id,
+            normalizedName: normalizeAccountName(state.currentUser.name),
+            authVerifier,
+            passwordHash,
+          };
+          saveCloudSessionMeta(meta);
+          setCloudSession(meta);
+        }
+      } catch (err) {
+        console.warn('Background cloud account migration warning:', err);
+      }
+    };
+    void bootstrapCloudAccounts();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Subscribe to real-time Firestore updates for active account
+  useEffect(() => {
+    if (!isAuthenticated || !cloudSession?.accountKey) return;
+    const activeUserSnapshot = latestStateRef.current.currentUser;
+    const localAccounts = getRegisteredAccounts();
+    let unsubscribe: (() => void) | undefined;
+    try {
+      unsubscribe = subscribeToAccountCloud(
+        cloudSession.accountKey,
+        activeUserSnapshot,
+        localAccounts,
+        (remoteState) => {
+          isApplyingRemoteRef.current = true;
+          saveAccountAppData(activeUserSnapshot.id, remoteState);
+          setState((prev) => ({
+            ...remoteState,
+            currentUser: {
+              ...remoteState.currentUser,
+              password: prev.currentUser.password || remoteState.currentUser.password,
+            },
+            users: prev.users,
+          }));
+          setTimeout(() => {
+            isApplyingRemoteRef.current = false;
+          }, 50);
+        }
+      );
+    } catch (err) {
+      console.warn('Cloud subscription error:', err);
     }
-  }, [state, isAuthenticated]);
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
+  }, [isAuthenticated, cloudSession?.accountKey]);
+
+  // Auto-save to localStorage immediately & debounce sync to Firestore cloud
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    saveAppData(state);
+
+    if (isApplyingRemoteRef.current || !cloudSession) return;
+    if (cloudSyncTimerRef.current) {
+      clearTimeout(cloudSyncTimerRef.current);
+    }
+    const sessionSnapshot = cloudSession;
+    const stateSnapshot = state;
+    cloudSyncTimerRef.current = setTimeout(() => {
+      void saveAccountStateToCloud(sessionSnapshot, stateSnapshot).catch((err) => {
+        console.warn('Cloud auto-sync failed:', err);
+      });
+    }, 500);
+
+    return () => {
+      if (cloudSyncTimerRef.current) {
+        clearTimeout(cloudSyncTimerRef.current);
+      }
+    };
+  }, [state, isAuthenticated, cloudSession]);
 
   // Apply dark mode class and accent color to root HTML element
   useEffect(() => {
@@ -259,16 +369,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   }, [state.integrations.emailSmtpEnabled, state.integrations.notificationEmail, state.currentUser.name]);
 
-  // Auth
-  const loginUser = (user: User) => {
-    const accounts = getRegisteredAccounts();
-    setActiveSessionUserId(user.id);
-    const loaded = loadAccountAppData(user, accounts);
-    setState(loaded);
-    setCurrentTabState('dashboard');
-    showToast('Login Berhasil', `Selamat datang kembali, ${user.name}!`, 'success');
-  };
-
   const getMergedAccounts = (): User[] => {
     const stored = getRegisteredAccounts();
     const map = new Map<string, User>();
@@ -280,9 +380,28 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     return Array.from(map.values());
   };
 
-  const loginWithCredentials = (name: string, password: string): { ok: boolean; error?: string } => {
+  const loginUser = (user: User) => {
+    const accounts = getRegisteredAccounts();
+    setActiveSessionUserId(user.id);
+    const loaded = loadAccountAppData(user, accounts);
+    setState(loaded);
+    setCurrentTabState('dashboard');
+    showToast('Login Berhasil', `Selamat datang kembali, ${user.name}!`, 'success');
+  };
+
+  const formatCloudAuthError = (err: unknown, fallback: string): string => {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.toLowerCase().includes('offline') || msg.toLowerCase().includes('network') || msg.toLowerCase().includes('unavailable')) {
+      return 'Koneksi ke server cloud terganggu. Pastikan internet aktif lalu coba lagi.';
+    }
+    return fallback;
+  };
+
+  const loginWithCredentials = async (
+    name: string,
+    password: string
+  ): Promise<{ ok: boolean; error?: string }> => {
     const cleanName = name.trim().replace(/\s+/g, ' ');
-    const rawPassword = password;
     const cleanPassword = password.trim();
 
     if (!cleanName || !cleanPassword) {
@@ -290,53 +409,56 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
 
     const accounts = getMergedAccounts();
-    const targetKey = normalizeAccountName(cleanName);
-    const matched = accounts.find((u) => normalizeAccountName(u.name) === targetKey);
+    try {
+      const result = await loginAccountFromCloud(cleanName, cleanPassword, accounts);
+      if (!result.ok || !result.user || !result.stateData || !result.sessionMeta) {
+        return { ok: false, error: result.error || 'Gagal masuk ke akun.' };
+      }
 
-    if (!matched) {
+      const loggedUser = result.user;
+      const targetKey = normalizeAccountName(loggedUser.name);
+      const updatedAccounts = accounts.some((u) => normalizeAccountName(u.name) === targetKey)
+        ? accounts.map((u) => (normalizeAccountName(u.name) === targetKey ? loggedUser : u))
+        : [...accounts, loggedUser];
+
+      saveRegisteredAccounts(updatedAccounts);
+      setActiveSessionUserId(loggedUser.id);
+      saveCloudSessionMeta(result.sessionMeta);
+      setCloudSession(result.sessionMeta);
+
+      const finalState: AppStateData = {
+        ...result.stateData,
+        users: updatedAccounts,
+        currentUser: loggedUser,
+      };
+      saveAccountAppData(loggedUser.id, finalState);
+      isApplyingRemoteRef.current = true;
+      setState(finalState);
+      setTimeout(() => {
+        isApplyingRemoteRef.current = false;
+      }, 50);
+
+      setCurrentTabState('dashboard');
+      setActiveModal(null);
+      showToast(
+        'Login Berhasil',
+        `Selamat datang kembali, ${loggedUser.name}! Data akun berhasil disinkronkan.`,
+        'success'
+      );
+      return { ok: true };
+    } catch (err) {
+      console.error('Cloud login error:', err);
       return {
         ok: false,
-        error: `Akun "${cleanName}" belum terdaftar. Silakan buat akun baru di tab "Buat Akun Baru".`,
+        error: formatCloudAuthError(err, 'Gagal menghubungi server login cloud. Coba lagi sebentar.'),
       };
     }
-
-    const storedPassword = matched.password || '';
-    const passwordMatches =
-      storedPassword === '' ||
-      storedPassword === rawPassword ||
-      storedPassword.trim() === cleanPassword;
-
-    if (!passwordMatches) {
-      return {
-        ok: false,
-        error: 'Password tidak sesuai. Silakan periksa kembali password Anda.',
-      };
-    }
-
-    const updatedUser: User = {
-      ...matched,
-      name: cleanName,
-      password: storedPassword === '' ? cleanPassword : storedPassword,
-      lastActive: 'Aktif Sekarang',
-    };
-    const updatedAccounts = accounts.map((u) =>
-      normalizeAccountName(u.name) === targetKey ? updatedUser : u
-    );
-    saveRegisteredAccounts(updatedAccounts);
-    setActiveSessionUserId(updatedUser.id);
-    const loaded = loadAccountAppData(updatedUser, updatedAccounts);
-    setState(loaded);
-    setCurrentTabState('dashboard');
-    setActiveModal(null);
-    showToast(
-      'Login Berhasil',
-      `Selamat datang kembali, ${updatedUser.name}! Data akun berhasil dimuat.`,
-      'success'
-    );
-    return { ok: true };
   };
 
-  const registerAndLoginAccount = (name: string, password: string): { ok: boolean; error?: string } => {
+  const registerAndLoginAccount = async (
+    name: string,
+    password: string
+  ): Promise<{ ok: boolean; error?: string }> => {
     const cleanName = name.trim().replace(/\s+/g, ' ');
     const cleanPassword = password.trim();
 
@@ -348,54 +470,64 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
 
     const accounts = getMergedAccounts();
-    const targetKey = normalizeAccountName(cleanName);
-    const duplicate = accounts.find((u) => normalizeAccountName(u.name) === targetKey);
+    try {
+      const result = await registerAccountInCloud(cleanName, cleanPassword, accounts);
+      if (!result.ok || !result.user || !result.stateData || !result.sessionMeta) {
+        return { ok: false, error: result.error || 'Gagal membuat akun baru.' };
+      }
 
-    if (duplicate) {
+      const newUser = result.user;
+      const updatedAccounts = [...accounts.filter((u) => normalizeAccountName(u.name) !== normalizeAccountName(cleanName)), newUser];
+      saveRegisteredAccounts(updatedAccounts);
+      setActiveSessionUserId(newUser.id);
+      saveCloudSessionMeta(result.sessionMeta);
+      setCloudSession(result.sessionMeta);
+
+      const freshData: AppStateData = {
+        ...result.stateData,
+        users: updatedAccounts,
+        currentUser: newUser,
+      };
+      saveAccountAppData(newUser.id, freshData);
+      isApplyingRemoteRef.current = true;
+      setState(freshData);
+      setTimeout(() => {
+        isApplyingRemoteRef.current = false;
+      }, 50);
+
+      setCurrentTabState('dashboard');
+      setActiveModal(null);
+      showToast(
+        'Akun Baru Berhasil Dibuat',
+        `Selamat datang, ${cleanName}! Akun Anda tersimpan di cloud dan bisa dibuka dari HP maupun laptop.`,
+        'success'
+      );
+      return { ok: true };
+    } catch (err) {
+      console.error('Cloud register error:', err);
       return {
         ok: false,
-        error: `Nama akun "${cleanName}" sudah terdaftar. Silakan masuk melalui tab "Masuk Akun".`,
+        error: formatCloudAuthError(err, 'Gagal mendaftarkan akun ke server cloud. Coba lagi sebentar.'),
       };
     }
-
-    const newUser: User = {
-      id: `user-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-      name: cleanName,
-      email: '',
-      password: cleanPassword,
-      role: 'superadmin',
-      avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
-      nim: '',
-      division: 'SENTRA UIB',
-      phone: '',
-      lastActive: 'Aktif Sekarang',
-    };
-
-    const updatedAccounts = [...accounts, newUser];
-    saveRegisteredAccounts(updatedAccounts);
-    setActiveSessionUserId(newUser.id);
-
-    // Fresh/latest data specifically initialized for this new account
-    const freshData = createFreshAccountData(newUser, updatedAccounts);
-    saveAccountAppData(newUser.id, freshData);
-    setState(freshData);
-    setCurrentTabState('dashboard');
-    setActiveModal(null);
-    showToast(
-      'Akun Baru Berhasil Dibuat',
-      `Selamat datang, ${cleanName}! Ruang kerja terbaru siap digunakan dan setiap input akan tersimpan ke akun Anda.`,
-      'success'
-    );
-    return { ok: true };
   };
 
   const logoutUser = () => {
+    if (cloudSyncTimerRef.current) {
+      clearTimeout(cloudSyncTimerRef.current);
+      cloudSyncTimerRef.current = null;
+    }
     if (isAuthenticated) {
       saveAccountAppData(state.currentUser.id, state);
+      if (cloudSession) {
+        void saveAccountStateToCloud(cloudSession, state).catch(() => {});
+      }
     }
     const accounts = getMergedAccounts();
     saveRegisteredAccounts(accounts);
     setActiveSessionUserId(null);
+    saveCloudSessionMeta(null);
+    setCloudSession(null);
     setState({
       ...INITIAL_STATE,
       users: accounts,
@@ -406,29 +538,41 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     showToast('Keluar Akun Berhasil', 'Silakan masuk kembali atau buat akun baru.', 'info');
   };
 
-  const updateCurrentUserProfile = (updated: Partial<User>) => {
+  const updateCurrentUserProfile = async (
+    updated: Partial<User>
+  ): Promise<{ ok: boolean; error?: string }> => {
     const cleanName = (updated.name?.trim() || state.currentUser.name).replace(/\s+/g, ' ');
-    const cleanPassword = updated.password !== undefined ? updated.password.trim() : state.currentUser.password;
+    const cleanPassword =
+      updated.password !== undefined ? updated.password.trim() : state.currentUser.password || '';
 
-    setState((prev) => {
-      const accounts = getMergedAccounts();
-      const targetId =
-        prev.currentUser.id &&
-        prev.currentUser.id !== 'user-empty' &&
-        prev.currentUser.id !== 'user-admin'
-          ? prev.currentUser.id
-          : `user-${Date.now()}`;
+    const accounts = getMergedAccounts();
+    const targetId =
+      state.currentUser.id &&
+      state.currentUser.id !== 'user-empty' &&
+      state.currentUser.id !== 'user-admin'
+        ? state.currentUser.id
+        : `user-${Date.now()}`;
 
-      const newCurr: User = {
-        ...prev.currentUser,
-        ...updated,
-        id: targetId,
-        name: cleanName,
-        password: cleanPassword,
-        role: updated.role || prev.currentUser.role || 'superadmin',
-        division: 'SENTRA UIB',
-        lastActive: 'Aktif Sekarang',
-      };
+    const newCurr: User = {
+      ...state.currentUser,
+      ...updated,
+      id: targetId,
+      name: cleanName,
+      password: cleanPassword,
+      role: updated.role || state.currentUser.role || 'superadmin',
+      division: 'SENTRA UIB',
+      lastActive: 'Aktif Sekarang',
+    };
+
+    try {
+      if (cloudSession) {
+        const cloudRes = await updateAccountCredentialsInCloud(cloudSession, newCurr, state);
+        if (!cloudRes.ok || !cloudRes.sessionMeta) {
+          return { ok: false, error: cloudRes.error || 'Gagal memperbarui akun di cloud.' };
+        }
+        saveCloudSessionMeta(cloudRes.sessionMeta);
+        setCloudSession(cloudRes.sessionMeta);
+      }
 
       const existsInList = accounts.some((u) => u.id === newCurr.id);
       const newUsers = existsInList
@@ -439,25 +583,36 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       setActiveSessionUserId(newCurr.id);
 
       const nextState: AppStateData = {
-        ...prev,
+        ...state,
         currentUser: newCurr,
         users: newUsers,
       };
       saveAccountAppData(newCurr.id, nextState);
-      return nextState;
-    });
+      isApplyingRemoteRef.current = true;
+      setState(nextState);
+      setTimeout(() => {
+        isApplyingRemoteRef.current = false;
+      }, 50);
 
-    logActivity(
-      'Keamanan',
-      'Pengaturan Akun Diperbarui',
-      `Profil & kredensial akun "${cleanName}" telah diperbarui.`,
-      'success'
-    );
-    showToast(
-      'Akun Diperbarui',
-      `Pengaturan akun "${cleanName}" berhasil disimpan.`,
-      'success'
-    );
+      logActivity(
+        'Keamanan',
+        'Pengaturan Akun Diperbarui',
+        `Profil & kredensial akun "${cleanName}" telah diperbarui.`,
+        'success'
+      );
+      showToast(
+        'Akun Diperbarui',
+        `Pengaturan akun "${cleanName}" berhasil disimpan ke cloud.`,
+        'success'
+      );
+      return { ok: true };
+    } catch (err) {
+      console.error('Update profile error:', err);
+      return {
+        ok: false,
+        error: formatCloudAuthError(err, 'Gagal memperbarui kredensial akun ke cloud.'),
+      };
+    }
   };
 
   const switchUser = (userId: string) => {
@@ -471,6 +626,26 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       const loaded = loadAccountAppData(target, accounts);
       setState(loaded);
       setCurrentTabState('dashboard');
+      if (target.password) {
+        void Promise.all([
+          computeAccountKey(target.name),
+          computePasswordHash(target.name, target.password),
+          computeAuthVerifier(target.name, target.password),
+        ]).then(([accountKey, passwordHash, authVerifier]) => {
+          const meta: CloudSessionMeta = {
+            accountKey,
+            userId: target.id,
+            normalizedName: normalizeAccountName(target.name),
+            authVerifier,
+            passwordHash,
+          };
+          saveCloudSessionMeta(meta);
+          setCloudSession(meta);
+        });
+      } else {
+        saveCloudSessionMeta(null);
+        setCloudSession(null);
+      }
       showToast('Beralih Akun', `Sekarang masuk sebagai ${target.name}`, 'info');
     }
   };

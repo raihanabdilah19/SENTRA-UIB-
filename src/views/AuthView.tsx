@@ -10,40 +10,47 @@ import {
   AlertCircle,
   CheckCircle2,
   ArrowRight,
+  Loader2,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 
 export const AuthView: React.FC = () => {
-  const { state, loginWithCredentials, registerAndLoginAccount } = useApp();
+  const { loginWithCredentials, registerAndLoginAccount } = useApp();
 
-  // Default to register if no accounts have been created yet, otherwise login
-  const [mode, setMode] = useState<'login' | 'register'>(
-    state.users.length > 0 ? 'login' : 'register'
-  );
+  // Default to login so users can sign in immediately on any device (laptop/HP)
+  const [mode, setMode] = useState<'login' | 'register'>('login');
   const [name, setName] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const handleModeChange = (nextMode: 'login' | 'register') => {
+    if (isSubmitting) return;
     setMode(nextMode);
     setErrorMsg(null);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting) return;
     setErrorMsg(null);
+    setIsSubmitting(true);
 
-    if (mode === 'login') {
-      const res = loginWithCredentials(name, password);
-      if (!res.ok) {
-        setErrorMsg(res.error || 'Gagal masuk ke akun.');
+    try {
+      if (mode === 'login') {
+        const res = await loginWithCredentials(name, password);
+        if (!res.ok) {
+          setErrorMsg(res.error || 'Gagal masuk ke akun.');
+        }
+      } else {
+        const res = await registerAndLoginAccount(name, password);
+        if (!res.ok) {
+          setErrorMsg(res.error || 'Gagal membuat akun baru.');
+        }
       }
-    } else {
-      const res = registerAndLoginAccount(name, password);
-      if (!res.ok) {
-        setErrorMsg(res.error || 'Gagal membuat akun baru.');
-      }
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -105,7 +112,7 @@ export const AuthView: React.FC = () => {
 
           <div className="relative z-10 mt-6 pt-4 border-t border-white/10 flex items-center gap-2 text-[11px] text-emerald-300">
             <ShieldCheck className="w-4 h-4 shrink-0" />
-            <span>Penyimpanan Terpisah &amp; Aman Per Akun Pengguna</span>
+            <span>Sinkronisasi Cloud Lintas Perangkat (HP &amp; Laptop)</span>
           </div>
         </div>
 
@@ -117,8 +124,8 @@ export const AuthView: React.FC = () => {
             </h2>
             <p className="text-[11px] sm:text-xs text-slate-500 dark:text-slate-400 mt-1">
               {mode === 'login'
-                ? 'Masukkan Nama Lengkap dan Password untuk membuka data organisasi milik akun Anda.'
-                : 'Daftarkan akun baru dengan Nama Lengkap dan Password untuk memulai ruang kerja terbaru.'}
+                ? 'Masukkan Nama Lengkap dan Password untuk membuka data organisasi milik akun Anda dari perangkat mana saja.'
+                : 'Daftarkan akun baru dengan Nama Lengkap dan Password agar bisa dibuka dari HP maupun laptop.'}
             </p>
           </div>
 
@@ -126,8 +133,9 @@ export const AuthView: React.FC = () => {
           <div className="grid grid-cols-2 gap-1.5 p-1 rounded-2xl bg-slate-100 dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700 mb-6">
             <button
               type="button"
+              disabled={isSubmitting}
               onClick={() => handleModeChange('login')}
-              className={`py-2.5 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+              className={`py-2.5 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer disabled:opacity-60 ${
                 mode === 'login'
                   ? 'bg-white dark:bg-slate-900 text-blue-600 dark:text-blue-400 shadow-xs'
                   : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
@@ -138,8 +146,9 @@ export const AuthView: React.FC = () => {
             </button>
             <button
               type="button"
+              disabled={isSubmitting}
               onClick={() => handleModeChange('register')}
-              className={`py-2.5 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+              className={`py-2.5 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer disabled:opacity-60 ${
                 mode === 'register'
                   ? 'bg-white dark:bg-slate-900 text-blue-600 dark:text-blue-400 shadow-xs'
                   : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
@@ -169,6 +178,7 @@ export const AuthView: React.FC = () => {
                 <input
                   type="text"
                   required
+                  disabled={isSubmitting}
                   autoComplete="username"
                   placeholder=""
                   value={name}
@@ -176,7 +186,7 @@ export const AuthView: React.FC = () => {
                     setName(e.target.value);
                     if (errorMsg) setErrorMsg(null);
                   }}
-                  className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-800 text-slate-900 dark:text-white focus:bg-white dark:focus:bg-slate-900 focus:outline-hidden focus:ring-2 focus:ring-blue-500 font-medium"
+                  className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-800 text-slate-900 dark:text-white focus:bg-white dark:focus:bg-slate-900 focus:outline-hidden focus:ring-2 focus:ring-blue-500 font-medium disabled:opacity-60"
                 />
               </div>
             </div>
@@ -190,6 +200,7 @@ export const AuthView: React.FC = () => {
                 <input
                   type={showPassword ? 'text' : 'password'}
                   required
+                  disabled={isSubmitting}
                   autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
                   placeholder=""
                   value={password}
@@ -197,7 +208,7 @@ export const AuthView: React.FC = () => {
                     setPassword(e.target.value);
                     if (errorMsg) setErrorMsg(null);
                   }}
-                  className="w-full pl-10 pr-10 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-800 text-slate-900 dark:text-white focus:bg-white dark:focus:bg-slate-900 focus:outline-hidden focus:ring-2 focus:ring-blue-500 font-medium"
+                  className="w-full pl-10 pr-10 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-800 text-slate-900 dark:text-white focus:bg-white dark:focus:bg-slate-900 focus:outline-hidden focus:ring-2 focus:ring-blue-500 font-medium disabled:opacity-60"
                 />
                 <button
                   type="button"
@@ -214,17 +225,27 @@ export const AuthView: React.FC = () => {
               <CheckCircle2 className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
               <p className="leading-relaxed">
                 {mode === 'register'
-                  ? 'Masuk dengan akun baru akan menyiapkan halaman kerja terbaru yang bersih, dan seluruh input Anda akan disimpan otomatis khusus untuk akun ini.'
-                  : 'Setiap data surat, arsip, keuangan, proposal, dan agenda tersimpan terpisah sesuai akun Anda masing-masing.'}
+                  ? 'Akun baru akan tersimpan otomatis ke cloud sehingga dapat login dari HP, tablet, maupun laptop kapan saja.'
+                  : 'Akun yang Anda buat di laptop atau HP dapat langsung diakses di perangkat mana pun dengan data yang sama.'}
               </p>
             </div>
 
             <button
               type="submit"
-              className="w-full py-3 px-5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-lg shadow-blue-600/25 transition-all cursor-pointer"
+              disabled={isSubmitting}
+              className="w-full py-3 px-5 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:bg-blue-500/80 text-white font-bold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-lg shadow-blue-600/25 transition-all cursor-pointer disabled:cursor-wait"
             >
-              <span>{mode === 'login' ? 'Masuk ke Sistem' : 'Buat Akun & Masuk'}</span>
-              <ArrowRight className="w-4 h-4" />
+              {isSubmitting ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>{mode === 'login' ? 'Memeriksa Akun...' : 'Membuat Akun Cloud...'}</span>
+                </>
+              ) : (
+                <>
+                  <span>{mode === 'login' ? 'Masuk ke Sistem' : 'Buat Akun & Masuk'}</span>
+                  <ArrowRight className="w-4 h-4" />
+                </>
+              )}
             </button>
           </form>
         </div>
